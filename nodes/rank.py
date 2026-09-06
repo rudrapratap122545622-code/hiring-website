@@ -1,33 +1,47 @@
-from supabase import Client
-
-
-def rank_candidates_for_job(job_id: str, supabase: Client) -> list[dict]:
+def rank_candidates_for_job(*args, **kwargs):
     """
-    Queries all evaluated candidates for a job, sorts them by score descending,
-    updates their rank in Supabase, and returns the ranked list.
+    Ranks candidates for a specific job, enforces a 60/100 score threshold,
+    and handles flexible graph/direct call signatures.
     """
-    # Fetch all candidates with valid scores for this job
-    response = (
-        supabase.table("candidates")
-        .select("id, name, email, score, rationale, status")
-        .eq("job_id", job_id)
-        .not_.is_("score", "null")
-        .order("score", desc=True)
-        .execute()
-    )
+    state = kwargs.get("state")
+    job_id = kwargs.get("job_id")
+    supabase = kwargs.get("supabase")
 
-    candidates = response.data or []
-    if not candidates:
+    if args:
+        if isinstance(args[0], dict):
+            state = args[0]
+        else:
+            job_id = args[0]
+            if len(args) > 1:
+                supabase = args[1]
+
+    if isinstance(state, dict):
+        job_id = state.get("job_id") or job_id
+        supabase = state.get("supabase") or supabase
+
+    if not job_id or not supabase:
         return []
 
-    ranked_results = []
-    for rank_idx, candidate in enumerate(candidates, start=1):
-        cand_id = candidate["id"]
+    # Fetch all scored candidates for this specific job
+    res = supabase.table("candidates").select("id, score, name, email").eq("job_id", job_id).execute()
+    candidates = res.data or []
 
-        # Persist rank index in Supabase
-        supabase.table("candidates").update({"rank": rank_idx}).eq("id", cand_id).execute()
+    # Sort candidates by score descending
+    sorted_candidates = sorted(candidates, key=lambda x: x.get("score", 0) or 0, reverse=True)
 
-        candidate["rank"] = rank_idx
-        ranked_results.append(candidate)
+    booked_ids = []
+    declined_ids = []
 
-    return ranked_results
+    for rank, cand in enumerate(sorted_candidates, start=1):
+        cand_id = cand["id"]
+        score = cand.get("score", 0) or 0
+
+        # Enforce Minimum Threshold of 60/100 AND Top 5 Rank
+        if score >= 60 and rank <= 5:
+            supabase.table("candidates").update({"status": "booked"}).eq("id", cand_id).execute()
+            booked_ids.append(cand_id)
+        else:
+            supabase.table("candidates").update({"status": "declined"}).eq("id", cand_id).execute()
+            declined_ids.append(cand_id)
+
+    return sorted_candidates
